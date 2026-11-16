@@ -73,7 +73,7 @@
                 </div>
             </div>
 
-            <!-- Navegación Principal: Pendientes vs Emisiones en Vivo -->
+            <!-- Navegación Principal -->
             <div class="flex items-center space-x-2 bg-slate-100 p-1 rounded-xl">
                 <button id="nav-btn-pendientes" onclick="switchMainView('pendientes')" 
                     class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all bg-white text-slate-800 shadow-sm">
@@ -205,7 +205,7 @@
             </div>
         </div>
 
-        <!-- VISTA 2: EMISIONES EN VIVO (TABLA DE INTEGRANTES CON DESCONTADOR) -->
+        <!-- VISTA 2: EMISIONES EN VIVO -->
         <div id="view-emisiones" class="main-view">
             <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
                 <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
@@ -327,7 +327,7 @@
         </div>
     </div>
 
-    <!-- Modal: Editar Pendiente (Lápiz) -->
+    <!-- Modal: Editar Pendiente -->
     <div id="modal-edit" class="fixed inset-0 z-50 hidden modal-backdrop flex items-center justify-center p-4">
         <div class="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden transform transition-all">
             <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-blue-50/50">
@@ -453,10 +453,18 @@
         </div>
     </div>
 
-    <!-- Script principal de la App -->
-    <script>
-        const STORAGE_KEY_TASKS = 'equipo_pendientes_canales_v4';
-        const STORAGE_KEY_EMISIONES = 'equipo_emisiones_vivo_v2';
+    <!-- SDKs de Firebase (Modular v10) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, set, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        // Configuración de tu base de datos de Firebase
+        const firebaseConfig = {
+            databaseURL: "https://control-operativo-default-rtdb.firebaseio.com"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
 
         // Integrantes ordenados estrictamente de la A a la Z
         const TEAM_MEMBERS = [
@@ -464,35 +472,55 @@
             "Gloria", "Jenifer", "Jenny", "Johana", "Jose", "Lorena", "Natalia"
         ].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
 
-        let tasks = JSON.parse(localStorage.getItem(STORAGE_KEY_TASKS)) || [];
-        let emisionesData = JSON.parse(localStorage.getItem(STORAGE_KEY_EMISIONES)) || {};
+        let tasks = [];
+        let emisionesData = {};
         
-        // Inicializar o normalizar propiedades de cada integrante
         TEAM_MEMBERS.forEach(name => {
-            if (!emisionesData[name]) {
-                emisionesData[name] = {
-                    initialCount: 10,
-                    intervalMinutes: 5,
-                    startTime: null,
-                    elapsedBeforePause: 0,
-                    paused: false,
-                    active: false,
-                    notifiedZero: false,
-                    workStatus: 'Activo'
-                };
-            } else {
-                if (typeof emisionesData[name].paused === 'undefined') emisionesData[name].paused = false;
-                if (typeof emisionesData[name].elapsedBeforePause === 'undefined') emisionesData[name].elapsedBeforePause = 0;
-                if (typeof emisionesData[name].notifiedZero === 'undefined') emisionesData[name].notifiedZero = false;
-                if (!emisionesData[name].workStatus) emisionesData[name].workStatus = 'Activo';
-            }
+            emisionesData[name] = {
+                initialCount: 10,
+                intervalMinutes: 5,
+                startTime: null,
+                elapsedBeforePause: 0,
+                paused: false,
+                active: false,
+                notifiedZero: false,
+                workStatus: 'Activo'
+            };
         });
 
         let currentCategory = 'all';
 
+        // Escuchar datos en tiempo real desde Firebase para tareas y emisiones
+        onValue(ref(db, 'tasks'), (snapshot) => {
+            const data = snapshot.val();
+            tasks = data ? Object.values(data) : [];
+            render();
+        });
+
+        onValue(ref(db, 'emisiones'), (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                TEAM_MEMBERS.forEach(name => {
+                    if (data[name]) {
+                        emisionesData[name] = data[name];
+                    }
+                });
+            }
+            renderEmisionesTable();
+        });
+
+        function syncTasksToFirebase() {
+            const tasksObj = {};
+            tasks.forEach(t => { tasksObj[t.id] = t; });
+            set(ref(db, 'tasks'), tasksObj);
+        }
+
+        function syncEmisionesToFirebase() {
+            set(ref(db, 'emisiones'), emisionesData);
+        }
+
         window.onload = function() {
             populateTeamSelects();
-            saveToStorage();
             render();
             renderEmisionesTable();
             setInterval(updateEmisionesRealtime, 1000);
@@ -511,56 +539,43 @@
             });
         }
 
-        function saveToStorage() {
-            localStorage.setItem(STORAGE_KEY_TASKS, JSON.stringify(tasks));
-            localStorage.setItem(STORAGE_KEY_EMISIONES, JSON.stringify(emisionesData));
-        }
-
-        // Sonido de alerta original para cuando un integrante llega a 0
-        function playAlertSound() {
+        window.playAlertSound = function() {
             try {
                 const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 const ctx = new AudioCtx();
-                const notes = [587.33, 880]; // Re5 -> La5
-
+                const notes = [587.33, 880];
                 notes.forEach((freq, idx) => {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
                     osc.type = 'sine';
                     osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.16);
-
                     gain.gain.setValueAtTime(0.001, ctx.currentTime + idx * 0.16);
                     gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + idx * 0.16 + 0.03);
                     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.16 + 0.45);
-
                     osc.connect(gain);
                     gain.connect(ctx.destination);
                     osc.start(ctx.currentTime + idx * 0.16);
                     osc.stop(ctx.currentTime + idx * 0.16 + 0.5);
                 });
             } catch (e) {
-                console.warn('No se pudo reproducir el audio automáticamente:', e);
+                console.warn('Audio no permitido automáticamente:', e);
             }
-        }
+        };
 
-        function showToastNotification(message) {
+        window.showToastNotification = function(message) {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = 'pointer-events-auto bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-lg border border-emerald-500 flex items-center gap-3 text-sm font-semibold transition-all duration-300';
-            toast.innerHTML = `
-                <i data-lucide="bell-ring" class="w-5 h-5 text-emerald-100 shrink-0"></i>
-                <span>${message}</span>
-            `;
+            toast.innerHTML = `<i data-lucide="bell-ring" class="w-5 h-5 text-emerald-100 shrink-0"></i><span>${message}</span>`;
             container.appendChild(toast);
             lucide.createIcons();
-
             setTimeout(() => {
                 toast.classList.add('opacity-0', 'translate-y-2');
                 setTimeout(() => toast.remove(), 300);
             }, 6000);
-        }
+        };
 
-        function switchMainView(view) {
+        window.switchMainView = function(view) {
             const btnPendientes = document.getElementById('nav-btn-pendientes');
             const btnEmisiones = document.getElementById('nav-btn-emisiones');
             const viewPendientes = document.getElementById('view-pendientes');
@@ -577,15 +592,15 @@
                 btnEmisiones.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all bg-white text-slate-800 shadow-sm";
                 btnPendientes.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:text-slate-900";
             }
-        }
+        };
 
-        function toggleModal(modalId, show) {
+        window.toggleModal = function(modalId, show) {
             const modal = document.getElementById(modalId);
             if (show) modal.classList.remove('hidden');
             else modal.classList.add('hidden');
-        }
+        };
 
-        function toggleCustomReason(type) {
+        window.toggleCustomReason = function(type) {
             const select = document.getElementById(`${type}-preset-reason`);
             const customContainer = document.getElementById(`${type}-custom-container`);
             const customInput = document.getElementById(`${type}-custom-desc`);
@@ -596,9 +611,9 @@
                 customContainer.classList.add('hidden');
                 customInput.value = '';
             }
-        }
+        };
 
-        function switchCategory(category) {
+        window.switchCategory = function(category) {
             currentCategory = category;
             const tabIds = {
                 'all': 'tab-all',
@@ -616,9 +631,9 @@
             });
 
             render();
-        }
+        };
 
-        function handleCreateTask(e) {
+        window.handleCreateTask = function(e) {
             e.preventDefault();
             const clientName = document.getElementById('create-client-name').value.trim();
             const clientEmail = document.getElementById('create-client-email').value.trim();
@@ -651,14 +666,14 @@
             };
 
             tasks.unshift(newTask);
-            saveToStorage();
+            syncTasksToFirebase();
             toggleModal('modal-create', false);
             document.getElementById('form-create').reset();
             document.getElementById('create-custom-container').classList.add('hidden');
             render();
-        }
+        };
 
-        function openEditModal(id) {
+        window.openEditModal = function(id) {
             const task = tasks.find(t => t.id === id);
             if (!task) return;
 
@@ -670,9 +685,9 @@
             document.getElementById('edit-author').value = task.reportedBy || '';
 
             toggleModal('modal-edit', true);
-        }
+        };
 
-        function handleEditTask(e) {
+        window.handleEditTask = function(e) {
             e.preventDefault();
             const id = document.getElementById('edit-task-id').value;
             const clientName = document.getElementById('edit-client-name').value.trim();
@@ -695,12 +710,12 @@
                 return t;
             });
 
-            saveToStorage();
+            syncTasksToFirebase();
             toggleModal('modal-edit', false);
             render();
-        }
+        };
 
-        function openResolveModal(id) {
+        window.openResolveModal = function(id) {
             const task = tasks.find(t => t.id === id);
             if (!task) return;
 
@@ -712,9 +727,9 @@
             document.getElementById('resolve-custom-container').classList.add('hidden');
 
             toggleModal('modal-resolve', true);
-        }
+        };
 
-        function handleResolveTask(e) {
+        window.handleResolveTask = function(e) {
             e.preventDefault();
             const id = document.getElementById('resolve-task-id').value;
             const presetReason = document.getElementById('resolve-preset-reason').value;
@@ -741,31 +756,31 @@
                 return t;
             });
 
-            saveToStorage();
+            syncTasksToFirebase();
             toggleModal('modal-resolve', false);
             render();
-        }
+        };
 
-        function deleteTask(id) {
+        window.deleteTask = function(id) {
             tasks = tasks.filter(t => t.id !== id);
-            saveToStorage();
+            syncTasksToFirebase();
             render();
-        }
+        };
 
-        // LÓGICA DE EMISIONES EN VIVO
-        function updateEmisionConfig(name, field, val) {
+        // LÓGICA DE EMISIONES EN VIVO CON FIREBASE
+        window.updateEmisionConfig = function(name, field, val) {
             if (!emisionesData[name]) return;
             emisionesData[name][field] = parseFloat(val) || 0;
-            saveToStorage();
-        }
+            syncEmisionesToFirebase();
+        };
 
-        function updateWorkStatus(name, val) {
+        window.updateWorkStatus = function(name, val) {
             if (!emisionesData[name]) return;
             emisionesData[name].workStatus = val;
-            saveToStorage();
-        }
+            syncEmisionesToFirebase();
+        };
 
-        function resetEmisionTimer(name) {
+        window.resetEmisionTimer = function(name) {
             const countInput = document.getElementById(`em-count-${name}`);
             const minInput = document.getElementById(`em-min-${name}`);
             
@@ -788,11 +803,11 @@
                 showToastNotification(`¡${name} está Al día!`);
             }
 
-            saveToStorage();
+            syncEmisionesToFirebase();
             renderEmisionesTable();
-        }
+        };
 
-        function togglePauseEmision(name) {
+        window.togglePauseEmision = function(name) {
             const data = emisionesData[name];
             if (!data || !data.active) return;
 
@@ -805,9 +820,9 @@
                 data.paused = false;
             }
 
-            saveToStorage();
+            syncEmisionesToFirebase();
             renderEmisionesTable();
-        }
+        };
 
         function getEmisionStatus(data) {
             if (!data || !data.active) {
@@ -841,10 +856,11 @@
 
         function renderEmisionesTable() {
             const tbody = document.getElementById('emisiones-table-body');
+            if (!tbody) return;
             tbody.innerHTML = '';
 
             TEAM_MEMBERS.forEach(name => {
-                const data = emisionesData[name];
+                const data = emisionesData[name] || { initialCount: 10, intervalMinutes: 5, active: false, paused: false, workStatus: 'Activo' };
                 const statusInfo = getEmisionStatus(data);
                 const canPause = data.active && statusInfo.current > 0;
 
@@ -878,7 +894,7 @@
                         <select onchange="updateWorkStatus('${name}', this.value)" 
                             class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-brand-500 focus:outline-none bg-white shadow-sm">
                             <option value="Activo" ${data.workStatus === 'Activo' ? 'selected' : ''}>🟢 Activo</option>
-                            <option value="Ocupado"${data.workStatus === 'Ocupado' ? 'selected' : ''}>🔴 Ocupado</option>
+                            <option value="Ocupado" ${data.workStatus === 'Ocupado' ? 'selected' : ''}>🔴 Ocupado</option>
                             <option value="Descansando" ${data.workStatus === 'Descansando' ? 'selected' : ''}>☕ Descansando</option>
                             <option value="WhatsApp Bogotá" ${data.workStatus === 'WhatsApp Bogotá' ? 'selected' : ''}>💬 WA Bogotá</option>
                             <option value="WhatsApp Costa" ${data.workStatus === 'WhatsApp Costa' ? 'selected' : ''}>💬 WA Costa</option>
@@ -914,6 +930,7 @@
 
             TEAM_MEMBERS.forEach(name => {
                 const data = emisionesData[name];
+                if (!data) return;
                 const statusInfo = getEmisionStatus(data);
                 
                 if (data.active && statusInfo.current === 0 && !data.notifiedZero) {
@@ -939,7 +956,7 @@
             });
 
             if (stateChanged) {
-                saveToStorage();
+                syncEmisionesToFirebase();
             }
         }
 
@@ -962,7 +979,10 @@
         function render() {
             const container = document.getElementById('tasks-container');
             const emptyState = document.getElementById('empty-state');
-            const searchVal = document.getElementById('search-input').value.toLowerCase();
+            const searchInput = document.getElementById('search-input');
+            if (!container || !emptyState || !searchInput) return;
+
+            const searchVal = searchInput.value.toLowerCase();
 
             const activeTasks = tasks.filter(t => t.status === 'active');
             const countAllActive = activeTasks.length;
